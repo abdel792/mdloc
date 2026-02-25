@@ -1,0 +1,7 @@
+[project]
+name = "mdloc"
+version = "0.1.0"
+dependencies = ["lxml", "click"]
+
+[project.scripts]
+mdloc = "mdloc.cli:cli"
