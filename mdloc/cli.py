@@ -248,15 +248,29 @@ def extract(input_md, output_xliff):
     Extract translatable content from a Markdown file into XLIFF.
     """
 
+    click.echo(
+        f"Generating XLIFF file {output_xliff} from {input_md}..."
+    )
+
     original_text = Path(input_md).read_text(encoding="utf-8-sig")
 
+    source_lines = original_text.count("\n") + 1
+
     skeleton, units = extract_markdown(original_text)
+
+    skeleton_lines = skeleton.count("\n") + 1
 
     file_id = Path(input_md).name
 
     xliff_content = build_xliff(skeleton, units, file_id)
 
     Path(output_xliff).write_text(xliff_content, encoding="utf-8")
+
+    click.echo(
+        f"Generated XLIFF file with {len(units)} translatable strings, "
+        f"{source_lines} total source lines, "
+        f"and {skeleton_lines} skeleton lines."
+    )
 
 
 @cli.command()
@@ -267,13 +281,30 @@ def reconstruct(input_xliff, output_md):
     Reconstruct a Markdown file from a translated XLIFF file.
     """
 
+    click.echo(
+        f"Generating markdown file {output_md} from {input_xliff}..."
+    )
+
     xliff_content = Path(input_xliff).read_text(encoding="utf-8")
 
     skeleton, translations = parse_xliff(xliff_content)
 
+    total_units = len(translations)
+
     reconstructed = reconstruct_markdown(skeleton, translations)
 
     Path(output_md).write_text(reconstructed, encoding="utf-8")
+
+    total_lines = reconstructed.count("\n") + 1
+    translated_strings = sum(1 for v in translations.values() if v.strip())
+    bad_translations = total_units - translated_strings
+
+    click.echo(
+        f"Generated markdown file with {total_lines} total lines, "
+        f"{total_units} translatable strings, "
+        f"and {translated_strings} translated strings. "
+        f"Ignoring {bad_translations} bad translated strings."
+    )
 
 
 if __name__ == "__main__":
