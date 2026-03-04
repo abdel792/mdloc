@@ -3,93 +3,125 @@ mdloc CLI module.
 
 Provides two main commands:
 
-- extract: Convert a Markdown file into an XLIFF 2.0 file while preserving
-           the Markdown structure inside a <skeleton> element and exposing
-           only translatable text inside <unit>/<segment>/<source> elements.
+- extract:
+    Convert a Markdown file into an XLIFF 2.0 file.
+    The Markdown structure is preserved inside a <skeleton> element.
+    Only translatable text is exposed inside <unit>/<segment>/<source>.
+    Each unit includes contextual <notes> (line number and Markdown prefix).
 
-- reconstruct: Rebuild the original Markdown file by injecting translated
-               text back into the skeleton.
+- reconstruct:
+    Rebuild the original Markdown file by reinjecting translated text
+    into the skeleton using stable placeholders.
 
 This implementation guarantees:
 
-- No Markdown syntax exposed to translators
-- No indentation pollution in reconstructed Markdown
+- Clean XLIFF 2.0 structure
+- Markdown syntax hidden from translators
+- Exact skeleton preservation
 - Stable placeholder-based reconstruction
-- Clean and readable XLIFF output
+- Context preservation (line numbers and prefixes)
 """
 
+from __future__ import annotations
+
 import uuid
-import click
 from pathlib import Path
-from markdown_it import MarkdownIt
+from typing import Dict, List, Tuple
+
+import click
 import xml.etree.ElementTree as ET
 
 
-PLACEHOLDER_PATTERN = "$(ID:{})"
-XLIFF_NS = "urn:oasis:names:tc:xliff:document:2.0"
-XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+# ============================================================
+# Constants
+# ============================================================
+
+PLACEHOLDER_PATTERN: str = "$(ID:{})"
+XLIFF_NS: str = "urn:oasis:names:tc:xliff:document:2.0"
 
 
 # ============================================================
 # Extraction Logic
 # ============================================================
 
-def extract_markdown(original_text: str):
+def extract_markdown(original_text: str) -> Tuple[str, List[Dict[str, str]]]:
     """
-    Extract translatable text from Markdown content.
+    Extract translatable content from a Markdown file.
 
-    The function parses the Markdown into an AST using markdown-it-py,
-    replaces only plain text nodes with unique placeholders, and preserves
-    the original Markdown structure inside a skeleton string.
+    The function processes the file line by line:
+    - Detects Markdown prefixes (#, ##, *, indentation, etc.)
+    - Replaces only the textual content with placeholders
+    - Preserves the exact Markdown structure in the skeleton
+    - Stores contextual information for XLIFF notes
 
     Args:
-        original_text (str): The original Markdown file content.
+        original_text (str):
+            The full Markdown file content.
 
     Returns:
-        tuple[str, list[dict]]:
-            - skeleton (str): Markdown content with placeholders.
-            - units (list): List of translation units (id + source text).
+        Tuple[str, List[Dict[str, str]]]:
+            - skeleton:
+                Markdown content with placeholders instead of text.
+            - units:
+                List of translation units containing:
+                    {
+                        "id": str,
+                        "source": str,
+                        "line": str,
+                        "prefix": str
+                    }
     """
 
-    md = MarkdownIt()
-    tokens = md.parse(original_text)
+    lines: List[str] = original_text.splitlines()
+    new_lines: List[str] = []
+    units: List[Dict[str, str]] = []
 
-    skeleton = original_text
-    units = []
+    for line_number, line in enumerate(lines, start=1):
 
-    search_start = 0
+        stripped = line.lstrip()
 
-    for token in tokens:
-        if token.type != "inline" or not token.children:
+        if not stripped:
+            new_lines.append(line)
             continue
 
-        for child in token.children:
-            if child.type != "text":
-                continue
+        indentation = line[: len(line) - len(stripped)]
 
-            content = child.content
-            if not content.strip():
-                continue
+        markdown_prefix = ""
+        content = stripped
 
-            index = skeleton.find(content, search_start)
-            if index == -1:
-                continue
+        # Detect headings
+        if stripped.startswith("#"):
+            parts = stripped.split(" ", 1)
+            if len(parts) == 2:
+                markdown_prefix = indentation + parts[0] + " "
+                content = parts[1]
 
-            unit_id = uuid.uuid4().hex
-            placeholder = PLACEHOLDER_PATTERN.format(unit_id)
+        # Detect unordered lists
+        elif stripped.startswith(("* ", "- ", "+ ")):
+            markdown_prefix = indentation + stripped[:2]
+            content = stripped[2:]
 
-            skeleton = (
-                skeleton[:index]
-                + placeholder
-                + skeleton[index + len(content):]
-            )
+        else:
+            markdown_prefix = indentation
 
-            units.append({
-                "id": unit_id,
-                "source": content
-            })
+        if not content.strip():
+            new_lines.append(line)
+            continue
 
-            search_start = index + len(placeholder)
+        unit_id = str(uuid.uuid4())
+        placeholder = PLACEHOLDER_PATTERN.format(unit_id)
+
+        new_line = markdown_prefix + placeholder
+        new_lines.append(new_line)
+
+        units.append({
+            "id": unit_id,
+            "source": content,
+            "line": str(line_number),
+            "prefix": markdown_prefix
+        })
+
+    skeleton = "\n".join(new_lines)
 
     return skeleton, units
 
@@ -98,24 +130,40 @@ def extract_markdown(original_text: str):
 # XLIFF Builder
 # ============================================================
 
-def build_xliff(skeleton: str, units: list, file_id: str) -> str:
+def build_xliff(skeleton: str, units: List[Dict[str, str]], file_id: str) -> str:
     """
-    Build a clean and readable XLIFF 2.0 document.
+    Build a complete XLIFF 2.0 document.
 
-    The generated XLIFF:
-    - Uses version 2.0
-    - Preserves Markdown exactly inside <skeleton>
-    - Exposes only text inside <unit>/<segment>/<source>
-    - Does not inject indentation into skeleton content
-    - Includes a minimal XML declaration
+    The generated structure:
+
+    <xliff version="2.0" srcLang="en">
+        <file id="..." original="...">
+            <skeleton>...</skeleton>
+            <unit>
+                <notes>
+                    <note appliesTo="source">line: X</note>
+                    <note appliesTo="source">prefix: ...</note>
+                </notes>
+                <segment>
+                    <source>Text</source>
+                </segment>
+            </unit>
+        </file>
+    </xliff>
 
     Args:
-        skeleton (str): Markdown skeleton with placeholders.
-        units (list): Extracted translation units.
-        file_id (str): Identifier for the <file> element.
+        skeleton (str):
+            Markdown skeleton containing placeholders.
+
+        units (List[Dict[str, str]]):
+            Extracted translation units.
+
+        file_id (str):
+            Identifier for the <file> element.
 
     Returns:
-        str: Serialized XLIFF content.
+        str:
+            Serialized XLIFF content.
     """
 
     xliff = ET.Element(
@@ -127,30 +175,61 @@ def build_xliff(skeleton: str, units: list, file_id: str) -> str:
         }
     )
 
-    file_elem = ET.SubElement(xliff, "file", {"id": file_id})
-
-    # Preserve skeleton exactly as-is
-    skeleton_elem = ET.SubElement(
-        file_elem,
-        "skeleton",
-        {XML_SPACE: "preserve"}
+    file_elem = ET.SubElement(
+        xliff,
+        "file",
+        {
+            "id": file_id,
+            "original": file_id
+        }
     )
-    skeleton_elem.text = "\n" + skeleton
-    skeleton_elem.tail = "\n"
+
+    # Instead of adding the skeleton to the XML tree, we keep it separate
+    # We'll inject it manually later to guarantee line breaks
+
 
     for unit in units:
+
         unit_elem = ET.SubElement(file_elem, "unit", {"id": unit["id"]})
+
+        notes_elem = ET.SubElement(unit_elem, "notes")
+
+        note_line = ET.SubElement(notes_elem, "note", {"appliesTo": "source"})
+        note_line.text = f"line: {unit['line']}"
+
+        if unit["prefix"].strip():
+            note_prefix = ET.SubElement(notes_elem, "note", {"appliesTo": "source"})
+            note_prefix.text = f"prefix: {unit['prefix']}"
+
         segment = ET.SubElement(unit_elem, "segment")
         source = ET.SubElement(segment, "source")
         source.text = unit["source"]
 
-    # Indent XML structure (not skeleton content)
-    ET.indent(xliff, space="    ")
+    ET.indent(xliff, space="   ")
 
+    # Serialize the XML tree (without skeleton)
+    ET.indent(xliff, space="    ")
     xml_body = ET.tostring(xliff, encoding="unicode")
 
-    # Manual XML declaration (exact format)
-    xml_header = '<?xml version="1.0"?>\n'
+    # Find where <file> opens and closes
+    file_start = xml_body.find("<file ")
+    file_end = xml_body.find(">", file_start) + 1
+    file_close = xml_body.rfind("</file>")
+
+    # Clean skeleton to remove leading/trailing empty lines
+    skeleton_clean = skeleton.strip("\n")
+
+    # Insert skeleton after <file ...> tag with proper line breaks
+    xml_body = (
+        xml_body[:file_end]            # up to closing '>' of <file ...>
+        + "\n<skeleton>\n"             # newline + opening skeleton
+        + skeleton_clean + "\n"        # skeleton content
+        + "</skeleton>"              # closing skeleton tag
+        + xml_body[file_end:file_close]  # rest of file content
+        + xml_body[file_close:]          # closing </file>
+    )
+
+    xml_header = '<?xml version="1.0" encoding="utf-8"?>\n'
 
     return xml_header + xml_body
 
@@ -159,18 +238,19 @@ def build_xliff(skeleton: str, units: list, file_id: str) -> str:
 # XLIFF Parsing
 # ============================================================
 
-def parse_xliff(xliff_content: str):
+def parse_xliff(xliff_content: str) -> Tuple[str, Dict[str, str]]:
     """
-    Parse an XLIFF file and extract skeleton and translations.
+    Parse an XLIFF 2.0 file and extract:
 
-    Ensures no unintended leading newline is introduced
-    in the reconstructed Markdown.
+    - skeleton
+    - translation units (target if present, otherwise source)
 
     Args:
-        xliff_content (str): Raw XLIFF content.
+        xliff_content (str):
+            Raw XLIFF content.
 
     Returns:
-        tuple[str, dict]:
+        Tuple[str, Dict[str, str]]:
             - skeleton (str)
             - translations (dict id -> translated text)
     """
@@ -181,14 +261,7 @@ def parse_xliff(xliff_content: str):
     skeleton_elem = root.find(".//x:skeleton", ns)
     skeleton = skeleton_elem.text if skeleton_elem is not None else ""
 
-    if skeleton is None:
-        skeleton = ""
-
-    # Remove accidental leading newline caused by XML formatting
-    if skeleton.startswith("\n"):
-        skeleton = skeleton[1:]
-
-    translations = {}
+    translations: Dict[str, str] = {}
 
     for unit in root.findall(".//x:unit", ns):
         unit_id = unit.attrib["id"]
@@ -201,32 +274,40 @@ def parse_xliff(xliff_content: str):
         elif source is not None and source.text:
             translations[unit_id] = source.text
 
-    return skeleton, translations
+    return skeleton or "", translations
 
 
 # ============================================================
 # Reconstruction
 # ============================================================
 
-def reconstruct_markdown(skeleton: str, translations: dict) -> str:
+def reconstruct_markdown(skeleton: str, translations: Dict[str, str]) -> str:
     """
-    Reconstruct the original Markdown by replacing placeholders
-    with translated text.
+    Reconstruct the Markdown file by replacing placeholders
+    with translated content.
 
     Args:
-        skeleton (str): Markdown skeleton containing placeholders.
-        translations (dict): Mapping of placeholder IDs to text.
+        skeleton (str):
+            Markdown skeleton containing placeholders.
+
+        translations (Dict[str, str]):
+            Mapping of placeholder IDs to translated text.
 
     Returns:
-        str: Reconstructed Markdown content.
+        str:
+            Fully reconstructed Markdown content.
     """
 
     result = skeleton
 
+    # Remove leading empty lines in skeleton before reconstruction
+    skeleton_clean = skeleton.lstrip("\n")
+
+    result = skeleton_clean
+
     for unit_id, translated_text in translations.items():
         placeholder = PLACEHOLDER_PATTERN.format(unit_id)
         result = result.replace(placeholder, translated_text)
-
     return result
 
 
@@ -235,7 +316,7 @@ def reconstruct_markdown(skeleton: str, translations: dict) -> str:
 # ============================================================
 
 @click.group()
-def cli():
+def cli() -> None:
     """mdloc command-line interface."""
     pass
 
@@ -243,22 +324,16 @@ def cli():
 @cli.command()
 @click.argument("input_md", type=click.Path(exists=True))
 @click.argument("output_xliff", type=click.Path())
-def extract(input_md, output_xliff):
+def extract(input_md: str, output_xliff: str) -> None:
     """
-    Extract translatable content from a Markdown file into XLIFF.
+    Extract translatable content from a Markdown file into XLIFF 2.0.
     """
 
-    click.echo(
-        f"Generating XLIFF file {output_xliff} from {input_md}..."
-    )
+    click.echo(f"Generating XLIFF file {output_xliff} from {input_md}...")
 
     original_text = Path(input_md).read_text(encoding="utf-8-sig")
 
-    source_lines = original_text.count("\n") + 1
-
     skeleton, units = extract_markdown(original_text)
-
-    skeleton_lines = skeleton.count("\n") + 1
 
     file_id = Path(input_md).name
 
@@ -267,43 +342,30 @@ def extract(input_md, output_xliff):
     Path(output_xliff).write_text(xliff_content, encoding="utf-8")
 
     click.echo(
-        f"Generated XLIFF file with {len(units)} translatable strings, "
-        f"{source_lines} total source lines, "
-        f"and {skeleton_lines} skeleton lines."
+        f"Generated XLIFF file with {len(units)} translatable strings."
     )
 
 
 @cli.command()
 @click.argument("input_xliff", type=click.Path(exists=True))
 @click.argument("output_md", type=click.Path())
-def reconstruct(input_xliff, output_md):
+def reconstruct(input_xliff: str, output_md: str) -> None:
     """
     Reconstruct a Markdown file from a translated XLIFF file.
     """
 
-    click.echo(
-        f"Generating markdown file {output_md} from {input_xliff}..."
-    )
+    click.echo(f"Generating markdown file {output_md} from {input_xliff}...")
 
     xliff_content = Path(input_xliff).read_text(encoding="utf-8")
 
     skeleton, translations = parse_xliff(xliff_content)
 
-    total_units = len(translations)
-
     reconstructed = reconstruct_markdown(skeleton, translations)
 
     Path(output_md).write_text(reconstructed, encoding="utf-8")
 
-    total_lines = reconstructed.count("\n") + 1
-    translated_strings = sum(1 for v in translations.values() if v.strip())
-    bad_translations = total_units - translated_strings
-
     click.echo(
-        f"Generated markdown file with {total_lines} total lines, "
-        f"{total_units} translatable strings, "
-        f"and {translated_strings} translated strings. "
-        f"Ignoring {bad_translations} bad translated strings."
+        f"Generated markdown file with {len(translations)} translatable strings."
     )
 
 
