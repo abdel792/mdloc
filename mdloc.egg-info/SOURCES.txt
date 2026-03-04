@@ -1,0 +1,13 @@
+LICENSE
+pyproject.toml
+mdloc/__init__.py
+mdloc/cli.py
+mdloc/extractor.py
+mdloc/reconstructor.py
+mdloc/xliff.py
+mdloc.egg-info/PKG-INFO
+mdloc.egg-info/SOURCES.txt
+mdloc.egg-info/dependency_links.txt
+mdloc.egg-info/entry_points.txt
+mdloc.egg-info/requires.txt
+mdloc.egg-info/top_level.txt

@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: mdloc
+Version: 0.1.0
+License-File: LICENSE
+Requires-Dist: lxml
+Requires-Dist: click
+Dynamic: license-file
