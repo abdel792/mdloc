@@ -134,15 +134,18 @@ def extract_markdown(original_text: str) -> Tuple[str, List[Dict[str, str]]]:
                                 continue
 
                             if is_translatable and content.strip():
+                                prefix = ""
+                                text = content
+                                if text.startswith(": "):
+                                    prefix = ": "
+                                    text = text[2:]
                                 unit_id = str(uuid.uuid4())
                                 placeholder = PLACEHOLDER_PATTERN.format(unit_id)
-
-                                new_line += placeholder
+                                new_line += prefix + placeholder
                                 contains_translatable = True
-
                                 units.append({
                                     "id": unit_id,
-                                    "source": content,
+                                    "source": text,
                                     "line": str(line_number),
                                     "initial": False
                                 })
