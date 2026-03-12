@@ -502,6 +502,11 @@ def extract(input_md: str, output_xliff: str) -> None:
     original_text = Path(input_md).read_text(encoding="utf-8-sig")
 
     skeleton, units = extract_markdown(original_text)
+    total_units = len(units)
+    initial_units = sum(1 for u in units if u["initial"])
+    translatable_units = total_units - initial_units
+
+    fuzzy_units = 0  # placeholder for future fuzzy detection
 
     file_id = Path(input_md).name
 
@@ -509,7 +514,15 @@ def extract(input_md: str, output_xliff: str) -> None:
 
     Path(output_xliff).write_text(xliff_content, encoding="utf-8")
 
-    click.echo(f"Generated XLIFF file with {len(units)} units.")
+    click.echo("")
+    click.echo("Extraction statistics")
+    click.echo("---------------------")
+    click.echo(f"Total units        : {total_units}")
+    click.echo(f"Translatable units : {translatable_units}")
+    click.echo(f"Non-translatable   : {initial_units}")
+    click.echo(f"Fuzzy units        : {fuzzy_units}")
+    click.echo("")
+    click.echo(f"XLIFF file written to: {output_xliff}")
 
 
 @cli.command()
@@ -525,12 +538,26 @@ def reconstruct(input_xliff: str, output_md: str) -> None:
     xliff_content = Path(input_xliff).read_text(encoding="utf-8")
 
     skeleton, translations = parse_xliff(xliff_content)
+    total_units = len(translations)
+
+    translated_units = sum(
+        1 for text in translations.values() if text and text.strip()
+    )
+
+    missing_units = total_units - translated_units
 
     reconstructed = reconstruct_markdown(skeleton, translations)
 
     Path(output_md).write_text(reconstructed, encoding="utf-8")
 
-    click.echo(f"Generated markdown file with {len(translations)} units.")
+    click.echo("")
+    click.echo("Reconstruction statistics")
+    click.echo("-------------------------")
+    click.echo(f"Total units processed : {total_units}")
+    click.echo(f"Translated units      : {translated_units}")
+    click.echo(f"Missing translations  : {missing_units}")
+    click.echo("")
+    click.echo(f"Markdown file written to: {output_md}")
 
 
 if __name__ == "__main__":
